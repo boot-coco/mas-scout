@@ -6,13 +6,19 @@
   "scripts": {
     "watch": "node src/watcher/index.js",
     "watch:diff": "node src/watcher/index.js --diff-only",
-    "test": "node --test src/**/*.test.js"
+    "test": "node --test src/**/*.test.js",
+    "lint": "eslint ."
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "cheerio": "^1.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.3",
+    "eslint": "^9.39.3",
+    "globals": "^15.15.0"
   },
   "license": "MIT"
 }

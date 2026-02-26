@@ -22,11 +22,12 @@ async function classifyReply(replyText) {
   // 简单关键词匹配作为 fallback
   const text = replyText.toLowerCase();
 
-  if (text.includes('interested') || text.includes('schedule') || text.includes('call') || text.includes('demo')) {
-    return 'positive';
-  }
+  // Check negative before positive — "not interested" contains "interested"
   if (text.includes('not interested') || text.includes('unsubscribe') || text.includes('remove')) {
     return 'negative';
+  }
+  if (text.includes('interested') || text.includes('schedule') || text.includes('call') || text.includes('demo')) {
+    return 'positive';
   }
   if (text.includes('already have') || text.includes('budget') || text.includes('later')) {
     return 'objection';
