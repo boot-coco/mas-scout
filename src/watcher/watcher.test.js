@@ -4,144 +4,180 @@ import { mkdtempSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-// We need to override DATA_DIR before importing snapshot, so we mock config.
-// Since the snapshot module reads DATA_DIR at import time, we use a dynamic
-// import approach with a temp directory.
-
-describe('parseInstitutionList', () => {
-  let parseInstitutionList;
+describe('parsePrintTable', () => {
+  let parsePrintTable;
 
   before(async () => {
     const mod = await import('./scraper.js');
-    parseInstitutionList = mod.parseInstitutionList;
+    parsePrintTable = mod.parsePrintTable;
   });
 
-  it('should extract institution details from HTML with detail links', () => {
+  it('should extract institution details from FID print table HTML', () => {
     const html = `
-      <html><body>
-        <div class="result">
-          <a href="/fid/institution/detail/12345-Test-Corp">Test Corp Pte Ltd</a>
-          <span>100 Robinson Road SINGAPORE 068902</span>
-          <a href="https://testcorp.com">Website</a>
-          <span>+65 61234567</span>
-        </div>
-        <div class="result">
-          <a href="/fid/institution/detail/67890-Another-Co">Another Co Pte Ltd</a>
-          <span>1 Raffles Place SINGAPORE 048616</span>
-          <a href="https://another.co">Website</a>
-          <span>69876543</span>
-        </div>
-      </body></html>
+      <table class="fid-print-table">
+        <tr><th>No.</th><th>Name</th><th>Address</th><th>Phone</th><th>Website</th><th>Sector</th><th>Licence Type</th><th>Activity</th><th>Sub-Activity</th></tr>
+        <tr>
+          <td>1</td>
+          <td>Test Corp Pte Ltd</td>
+          <td>100 Robinson Road SINGAPORE 068902</td>
+          <td>+65 61234567</td>
+          <td>https://testcorp.com</td>
+          <td>Capital Markets</td>
+          <td>Capital Markets Services Licensee</td>
+          <td>Dealing in Securities</td>
+          <td>Securities</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>Another Co Pte Ltd</td>
+          <td>1 Raffles Place SINGAPORE 048616</td>
+          <td>69876543</td>
+          <td>https://another.co</td>
+          <td>Payments</td>
+          <td>Major Payment Institution</td>
+          <td>Account Issuance</td>
+          <td></td>
+        </tr>
+      </table>
     `;
 
-    const result = parseInstitutionList(html, 'Capital Markets Services Licensee');
+    const result = parsePrintTable(html);
 
     assert.strictEqual(result.length, 2);
 
-    // First institution
     assert.strictEqual(result[0].name, 'Test Corp Pte Ltd');
-    assert.strictEqual(result[0].fid, '12345');
-    assert.ok(result[0].detailUrl.includes('12345'));
-    assert.strictEqual(result[0].licenseType, 'Capital Markets Services Licensee');
-    assert.ok(result[0].address.includes('SINGAPORE'));
+    assert.strictEqual(result[0].address, '100 Robinson Road SINGAPORE 068902');
+    assert.strictEqual(result[0].phone, '+65 61234567');
     assert.strictEqual(result[0].website, 'https://testcorp.com');
-    assert.ok(result[0].phone.includes('61234567'));
+    assert.strictEqual(result[0].sector, 'Capital Markets');
+    assert.strictEqual(result[0].licenseType, 'Capital Markets Services Licensee');
+    assert.strictEqual(result[0].activity, 'Dealing in Securities');
 
-    // Second institution
     assert.strictEqual(result[1].name, 'Another Co Pte Ltd');
-    assert.strictEqual(result[1].fid, '67890');
-    assert.strictEqual(result[1].licenseType, 'Capital Markets Services Licensee');
+    assert.strictEqual(result[1].sector, 'Payments');
+    assert.strictEqual(result[1].licenseType, 'Major Payment Institution');
   });
 
-  it('should return an empty array when no institution links are found', () => {
-    const html = '<html><body><p>No results</p></body></html>';
-    const result = parseInstitutionList(html, 'Major Payment Institution');
+  it('should return an empty array when no data rows exist', () => {
+    const html = '<table class="fid-print-table"><tr><th>No.</th><th>Name</th></tr></table>';
+    const result = parsePrintTable(html);
     assert.deepStrictEqual(result, []);
   });
 
-  it('should handle links without a matching FID pattern gracefully', () => {
+  it('should skip rows with fewer than 8 columns', () => {
     const html = `
-      <html><body>
-        <div>
-          <a href="/fid/institution/detail/no-number-here">Mystery Corp</a>
-        </div>
-      </body></html>
+      <table class="fid-print-table">
+        <tr><th>No.</th><th>Name</th></tr>
+        <tr><td>1</td><td>Incomplete Row</td></tr>
+      </table>
     `;
-    const result = parseInstitutionList(html, 'Standard Payment Institution');
+    const result = parsePrintTable(html);
+    assert.deepStrictEqual(result, []);
+  });
+
+  it('should skip rows with empty names', () => {
+    const html = `
+      <table class="fid-print-table">
+        <tr><th>No.</th></tr>
+        <tr><td>1</td><td></td><td>addr</td><td>phone</td><td>web</td><td>sector</td><td>license</td><td>activity</td></tr>
+      </table>
+    `;
+    const result = parsePrintTable(html);
+    assert.deepStrictEqual(result, []);
+  });
+});
+
+describe('mergeRows', () => {
+  let mergeRows;
+
+  before(async () => {
+    const mod = await import('./scraper.js');
+    mergeRows = mod.mergeRows;
+  });
+
+  it('should merge rows with the same company name', () => {
+    const rows = [
+      { name: 'Alpha Corp', address: '1 Test St', phone: '12345', website: 'https://alpha.com', sector: 'Capital Markets', licenseType: 'CMS Licensee', activity: 'Dealing' },
+      { name: 'Alpha Corp', address: '1 Test St', phone: '12345', website: 'https://alpha.com', sector: 'Capital Markets', licenseType: 'CMS Licensee', activity: 'Advising' },
+    ];
+
+    const result = mergeRows(rows);
     assert.strictEqual(result.length, 1);
-    assert.strictEqual(result[0].name, 'Mystery Corp');
-    assert.strictEqual(result[0].fid, '');
+    assert.strictEqual(result[0].name, 'Alpha Corp');
+    assert.deepStrictEqual(result[0].activities, ['Dealing', 'Advising']);
+    assert.deepStrictEqual(result[0].licenseTypes, ['CMS Licensee']);
+  });
+
+  it('should merge different license types for the same company', () => {
+    const rows = [
+      { name: 'Beta Inc', address: 'addr', phone: '', website: '', sector: 'Capital Markets', licenseType: 'CMS Licensee', activity: 'Dealing' },
+      { name: 'Beta Inc', address: 'addr', phone: '', website: '', sector: 'Payments', licenseType: 'Major Payment Institution', activity: 'Account Issuance' },
+    ];
+
+    const result = mergeRows(rows);
+    assert.strictEqual(result.length, 1);
+    assert.deepStrictEqual(result[0].licenseTypes, ['CMS Licensee', 'Major Payment Institution']);
+    assert.deepStrictEqual(result[0].activities, ['Dealing', 'Account Issuance']);
+  });
+
+  it('should keep different companies separate', () => {
+    const rows = [
+      { name: 'Alpha Corp', address: 'a', phone: '', website: '', sector: 's', licenseType: 'L1', activity: 'A1' },
+      { name: 'Beta Inc', address: 'b', phone: '', website: '', sector: 's', licenseType: 'L2', activity: 'A2' },
+    ];
+
+    const result = mergeRows(rows);
+    assert.strictEqual(result.length, 2);
+  });
+
+  it('should handle empty input', () => {
+    const result = mergeRows([]);
+    assert.deepStrictEqual(result, []);
   });
 });
 
 describe('saveSnapshot and loadLatestSnapshot', () => {
-  let tempDir;
   let saveSnapshot;
   let loadLatestSnapshot;
 
   before(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'mas-scout-test-'));
-
-    // Dynamically construct a snapshot module that uses our temp dir.
-    // We do this by importing the real functions and monkey-patching the dir.
-    // Actually, the snapshot module uses DATA_DIR from config, which is fixed.
-    // Instead, we'll write a small inline module test using the filesystem directly.
-    // The cleanest approach: re-implement minimal versions referencing tempDir.
-
-    // Actually let's just test the logic directly by importing and using
-    // the snapshot module's internal logic. The module uses SNAPSHOT_DIR which
-    // is `join(DATA_DIR, 'snapshots')`. We can't easily override that.
-    //
-    // Best approach: test with the actual module but set up data in DATA_DIR.
-    // For isolation, we'll use a different approach: import snapshot functions
-    // and work within the project's data directory (which is gitignored).
-
     const snapshotMod = await import('./snapshot.js');
     saveSnapshot = snapshotMod.saveSnapshot;
     loadLatestSnapshot = snapshotMod.loadLatestSnapshot;
-  });
-
-  after(() => {
-    // Clean up temp dir
-    if (tempDir && existsSync(tempDir)) {
-      rmSync(tempDir, { recursive: true });
-    }
   });
 
   it('should save and load a snapshot with roundtrip fidelity', () => {
     const mockInstitutions = [
       {
         name: 'Test Bank Pte Ltd',
-        fid: '99999',
-        detailUrl: 'https://example.com/detail/99999',
-        licenseType: 'Major Payment Institution',
         address: '1 Test Street SINGAPORE 123456',
-        website: 'https://testbank.com',
         phone: '61112222',
+        website: 'https://testbank.com',
+        sector: 'Payments',
+        licenseTypes: ['Major Payment Institution'],
+        activities: ['Account Issuance'],
       },
       {
         name: 'Demo Corp',
-        fid: '88888',
-        detailUrl: 'https://example.com/detail/88888',
-        licenseType: 'Capital Markets Services Licensee',
         address: '2 Demo Avenue SINGAPORE 654321',
-        website: 'https://democorp.sg',
         phone: '63334444',
+        website: 'https://democorp.sg',
+        sector: 'Capital Markets',
+        licenseTypes: ['Capital Markets Services Licensee'],
+        activities: ['Dealing in Securities'],
       },
     ];
 
-    // Save snapshot
     const filepath = saveSnapshot(mockInstitutions);
     assert.ok(filepath, 'saveSnapshot should return a file path');
     assert.ok(existsSync(filepath), 'snapshot file should exist on disk');
 
-    // Load it back
     const loaded = loadLatestSnapshot();
     assert.ok(loaded, 'loadLatestSnapshot should return data');
     assert.strictEqual(loaded.count, 2);
     assert.strictEqual(loaded.institutions.length, 2);
     assert.strictEqual(loaded.institutions[0].name, 'Test Bank Pte Ltd');
-    assert.strictEqual(loaded.institutions[0].fid, '99999');
+    assert.deepStrictEqual(loaded.institutions[0].licenseTypes, ['Major Payment Institution']);
     assert.strictEqual(loaded.institutions[1].name, 'Demo Corp');
     assert.ok(loaded.timestamp, 'snapshot should have a timestamp');
   });
@@ -156,13 +192,8 @@ describe('diffSnapshots', () => {
   });
 
   it('should detect added institutions', () => {
-    const previous = [
-      { name: 'Alpha Corp', fid: '100' },
-    ];
-    const current = [
-      { name: 'Alpha Corp', fid: '100' },
-      { name: 'Beta Inc', fid: '200' },
-    ];
+    const previous = [{ name: 'Alpha Corp' }];
+    const current = [{ name: 'Alpha Corp' }, { name: 'Beta Inc' }];
 
     const diff = diffSnapshots(current, previous);
     assert.strictEqual(diff.added.length, 1);
@@ -171,13 +202,8 @@ describe('diffSnapshots', () => {
   });
 
   it('should detect removed institutions', () => {
-    const previous = [
-      { name: 'Alpha Corp', fid: '100' },
-      { name: 'Beta Inc', fid: '200' },
-    ];
-    const current = [
-      { name: 'Alpha Corp', fid: '100' },
-    ];
+    const previous = [{ name: 'Alpha Corp' }, { name: 'Beta Inc' }];
+    const current = [{ name: 'Alpha Corp' }];
 
     const diff = diffSnapshots(current, previous);
     assert.strictEqual(diff.added.length, 0);
@@ -186,14 +212,8 @@ describe('diffSnapshots', () => {
   });
 
   it('should detect both added and removed institutions', () => {
-    const previous = [
-      { name: 'Alpha Corp', fid: '100' },
-      { name: 'Gamma LLC', fid: '300' },
-    ];
-    const current = [
-      { name: 'Alpha Corp', fid: '100' },
-      { name: 'Delta Pte', fid: '400' },
-    ];
+    const previous = [{ name: 'Alpha Corp' }, { name: 'Gamma LLC' }];
+    const current = [{ name: 'Alpha Corp' }, { name: 'Delta Pte' }];
 
     const diff = diffSnapshots(current, previous);
     assert.strictEqual(diff.added.length, 1);
@@ -203,21 +223,9 @@ describe('diffSnapshots', () => {
   });
 
   it('should return empty arrays when snapshots are identical', () => {
-    const data = [
-      { name: 'Alpha Corp', fid: '100' },
-    ];
-
+    const data = [{ name: 'Alpha Corp' }];
     const diff = diffSnapshots(data, data);
     assert.strictEqual(diff.added.length, 0);
     assert.strictEqual(diff.removed.length, 0);
-  });
-
-  it('should use name as key when fid is absent', () => {
-    const previous = [{ name: 'NoFid Corp' }];
-    const current = [{ name: 'NoFid Corp' }, { name: 'New Corp' }];
-
-    const diff = diffSnapshots(current, previous);
-    assert.strictEqual(diff.added.length, 1);
-    assert.strictEqual(diff.added[0].name, 'New Corp');
   });
 });
